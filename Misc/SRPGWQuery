@@ -1,0 +1,276 @@
+""" Code to query catalogues
+Context : SRP.GW
+Module  : SRPGWQuery
+Author  : Stefano Covino
+Date    : 03/01/2016
+E-mail  : stefano.covino@brera.inaf.it
+URL:    : http://www.merate.mi.astro.it/utenti/covino
+Purpose : Query catalogues
+
+usage: SRPGWQuery [-h] [-B] [-c RA DEC] [-d] [-g gaiarad] -i inputfile -o
+                  outfile [-s simbadrad] [-v] [-w wsubpath] [--version]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -B, --BoMySQL         IGAIA query to MySQL server in Bologna
+  -c RA DEC, --coordcols RA DEC
+                        Coordinate column labels
+  -d, --debug           Debug information
+  -g gaiarad, --gaia gaiarad
+                        GAIA catalogue query radius (arcsec)
+  -i inputfile, --inputfile inputfile
+                        Input table
+  -o outfile, --outfile outfile
+                        Output table
+  -s simbadrad, --simbad simbadrad
+                        Simbad catalogue query radius (arcsec)
+  -v, --verbose         Fully describe operations
+  -w wsubpath, --weight wsubpath
+                        Get weight frame value (substitute path)
+  --version             show program's version number and exit
+
+
+History : (12/11/2015) First version.
+		: (03/01/2016) Work for single tables too.
+"""
+
+__version__ = '1.1.0'
+
+
+import argparse, os
+import numpy
+from astropy.table import Column, Table
+import pyprind
+import SRPGW as GW
+from SRPGW.GetSimbad import GetSimbad
+from SRPGW.GetIGAIA import GetIGAIA
+from SRPGW.GetPixVal import GetPixVal
+from SRPGW.GetHeadVal import GetHeadVal
+
+
+
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-B", "--BoMySQL", action="store_true", help="IGAIA query to MySQL server in Bologna")
+parser.add_argument("-c", "--coordcols", action="store", nargs=2, default=('X_WORLD','Y_WORLD'), help="Coordinate column labels", metavar=('RA','DEC'))
+parser.add_argument("-d", "--debug", action="store_true", help="Debug information")
+parser.add_argument("-D", "--date", action="store_true", help="Get frame date")
+parser.add_argument("-g", "--gaia", action="store", type=float, help="GAIA catalogue query radius (arcsec)", metavar='gaiarad')
+parser.add_argument("-i", "--inputfile", action="store", help="Input table", required=True, metavar='inputfile')
+parser.add_argument("-o", "--outfile", action="store", help="Output table", required=True, metavar='outfile')
+parser.add_argument("-s", "--simbad", action="store", type=float, help="Simbad catalogue query radius (arcsec)", metavar='simbadrad')
+parser.add_argument("-v", "--verbose", action="store_true", help="Fully describe operations")
+parser.add_argument("-w", "--weight", action="store_true", help="Get weight frame value")
+parser.add_argument("--version", action="version", version=__version__)
+options = parser.parse_args()
+
+
+#
+if options.inputfile and options.outfile:
+    #
+    if not os.path.isfile(options.inputfile):
+        parser.error ("Input file does not exist.")
+    #
+    if not (options.gaia or options.simbad or options.weight or options.date):
+        parser.error( "At least one option among gaia/simbad/weight/date should be selected.") 
+    #
+    if options.simbad is not None and options.simbad <= 0.0:
+        parser.error ("Simbad query radius must be positive.")
+    #
+    if options.gaia is not None and options.gaia <= 0.0:
+        parser.error ("GAIA query radius must be positive.")
+    #
+    if options.verbose:
+        print ("Reading table ", options.inputfile)
+    dt = Table.read(options.inputfile, format='ascii.ecsv')
+    #
+    if (options.coordcols[0]+'_1' in dt.columns.keys()) and (options.coordcols[1]+'_1' in dt.columns.keys()):
+        racol = options.coordcols[0]+'_1'
+        deccol = options.coordcols[1]+'_1'
+    elif (options.coordcols[0] in dt.columns.keys()) and (options.coordcols[1] in dt.columns.keys()):
+        racol = options.coordcols[0]
+        deccol = options.coordcols[1]
+    else:
+        parser.error ("Coordinate columns not recognized.")
+    #
+    if options.simbad:
+        if options.verbose:
+            print ("Simbad queries...")
+        simb = []
+        if options.verbose:
+            dtpbar = pyprind.prog_bar(dt)
+        else:
+            dtpbar = dt
+        for en in dtpbar:
+            res = GetSimbad(en[racol],en[deccol],options.simbad)
+            if options.debug:
+                print ("%s %s: %s" % (en[racol],en[deccol],res))
+            simb.append(res)
+        simq = Column(simb, name=GW.SIMBCOL)
+        if GW.SIMBCOL in dt.columns.keys():
+            dt.remove_column(GW.SIMBCOL)
+        dt.add_column(simq)
+    #
+    if options.gaia:
+        if options.verbose:
+            print ("GAIA queries...")
+        gaia = []
+        if options.verbose:
+            dtpbar = pyprind.prog_bar(dt)
+        else:
+            dtpbar = dt
+        for en in dtpbar:
+            if options.BoMySQL:
+                myquery=True
+            else:
+                myquery=False
+            res = GetIGAIA(en[racol],en[deccol],options.gaia,myquery)
+            if options.debug:
+                print ("%s %s: %s" % (en[racol],en[deccol],res))
+            gaia.append(res)
+        gaiaq = Column(gaia, name=GW.GAIACOL)
+        if GW.GAIACOL in dt.columns.keys():
+            dt.remove_column(GW.GAIACOL)
+        dt.add_column(gaiaq)
+    #
+    if options.weight:
+        if options.verbose:
+            print ("Weight queries...")
+        if (GW.FNAMECOL+'_1' in dt.columns.keys()) and (GW.FNAMECOL+'_2' in dt.columns.keys()):
+            wei1 = []
+            wei2 = []
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("First epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_1'])[0]+'.weight.fits'
+                if os.path.isfile(fname):
+                    res1 = GetPixVal(en[racol],en[deccol],fname)
+                else:
+                    res1 = -99
+                wei1.append(res1)
+                if options.debug:
+                    print ("%s %s: %s" % (en[racol],en[deccol],res1))
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("Second epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_2'])[0]+'.weight.fits'
+                if os.path.isfile(fname):
+                    res2 = GetPixVal(en[racol],en[deccol],fname)
+                else:
+                    res2 = -99
+                wei2.append(res2)
+                if options.debug:
+                    print ("%s %s: %s" % (en[racol],en[deccol],res2))
+            weiq1 = Column(wei1, name=GW.WEIGHTCOL+'_1')
+            weiq2 = Column(wei2, name=GW.WEIGHTCOL+'_2')
+            if GW.WEIGHTCOL+'_1' in dt.columns.keys():
+                dt.remove_column(GW.WEIGHTCOL+'_1')
+            if GW.WEIGHTCOL+'_2' in dt.columns.keys():
+                dt.remove_column(GW.WEIGHTCOL+'_2')
+            dt.add_column(weiq1)
+            dt.add_column(weiq2)     
+        elif GW.FNAMECOL in dt.columns.keys():
+            wei = []
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL])[0]+'.weight.fits'
+                if os.path.isfile(fname):
+                    res = GetPixVal(en[racol],en[deccol],fname)
+                else:
+                    res = -99
+                wei.append(res)
+                if options.debug:
+                    print ("%s %s: %s" % (en[racol],en[deccol],res))
+            weiq = Column(wei, name=GW.WEIGHTCOL)
+            if GW.WEIGHTCOL in dt.columns.keys():
+                dt.remove_column(GW.WEIGHTCOL)
+            dt.add_column(weiq)
+        else:
+            parser.error('Filename column(s) not present.')
+    #
+    if options.date:
+        if options.verbose:
+            print ("Date queries...")
+        if (GW.FNAMECOL+'_1' in dt.columns.keys()) and (GW.FNAMECOL+'_2' in dt.columns.keys()):
+            date1 = []
+            date2 = []
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("First epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_1'])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res1 = GetHeadVal(GW.DATECOL,fname)
+                else:
+                    res1 = 'No'
+                date1.append(res1)
+                if options.debug:
+                    print ("%s: %s" % (GW.DATECOL,res1))
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("Second epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_2'])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res2 = GetHeadVal(GW.DATECOL,fname)
+                else:
+                    res2 = 'No'
+                date2.append(res2)
+                if options.debug:
+                    print ("%s: %s" % (GW.DATECOL,res2))
+            dateq1 = Column(date1, name=GW.DATECOL+'_1')
+            dateq2 = Column(date2, name=GW.DATECOL+'_2')
+            if GW.DATECOL+'_1' in dt.columns.keys():
+                dt.remove_column(GW.DATECOL+'_1')
+            if GW.DATECOL+'_2' in dt.columns.keys():
+                dt.remove_column(GW.DATECOL+'_2')
+            dt.add_column(dateq1)
+            dt.add_column(dateq2)
+        elif GW.FNAMECOL in dt.columns.keys():
+            date = []
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res = GetHeadVal(GW.DATECOL,fname)
+                else:
+                    res = 'No'
+                date.append(res)
+                if options.debug:
+                    print ("%s: %s" % (GW.DATECOL,res))   
+            dateq = Column(date, name=GW.DATECOL)
+            if GW.DATECOL in dt.columns.keys():
+                dt.remove_column(GW.DATECOL)
+            dt.add_column(dateq)
+        else:
+            parser.error('Filename column(s) not present.')
+        #
+    dt.write(options.outfile,format='ascii.ecsv')
+    if options.verbose:
+        print ("Table %s with %d entries saved." % (options.outfile, len(dt)))
+    else:
+        print (options.outfile, len(dt))
+else:
+    parser.print_help()
+#

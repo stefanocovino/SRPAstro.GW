@@ -1,0 +1,348 @@
+""" Code to show tables
+Context : SRP.GW
+Module  : SRPGWAnalysis
+Author  : Stefano Covino
+Date    : 02/01/2016
+E-mail  : stefano.covino@brera.inaf.it
+URL:    : http://www.merate.mi.astro.it/utenti/covino
+Purpose : Data Analysis
+
+usage: SRPGWTabExtract [-h] [-d dmagcol] [-F [magfiles [magfiles ...]]]
+                       [-i inputfile] -r resfile [-v] [--version]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -d dmagcol, --dmagcol dmagcol
+                        Delta(mag) col
+  -F [magfiles [magfiles ...]], --findata [magfiles [magfiles ...]]
+                        Collect final data
+  -i inputfile, --inputfile inputfile
+                        Input table
+  -r resfile, --resfile resfile
+                        Result table (created if it does not exist)
+  -v, --verbose         Fully describe operations
+  --version             show program's version number and exit
+
+
+History : (18/11/2015) First version.
+        : (12/12/2015) More information.
+        : (14/12/2015) Upper limits in plots.
+        : (15/12/2015) More data in plots.
+        : (18/12/2015) Output of candidate list.
+        : (22/12/2015) More stringent limits for Id similarity.
+        : (31/12/2015) Visual analysis starting from the brightest sources.
+        : (01/01/2016) Analysis starting from the brightest source and 
+        				possibility to stop at anytime.
+        : (02/01/2016) Graphic sequences generated only on demand.
+"""
+
+__version__ = '1.5.0'
+
+
+import argparse, os, os.path
+import numpy
+from astropy.table import Column, Table
+from astropy import table
+import pylab
+from matplotlib import gridspec
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, append=True)
+from fuzzywuzzy import fuzz
+warnings.resetwarnings()
+import SRPGW as GW
+from SRPGW.GetPics import GetPics
+from astropy.coordinates import SkyCoord
+from astropy import units as u
+
+
+
+
+
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-d", "--dmagcol", action="store", nargs=2, help="Delta(mag) col ecol", default=('DSRPMAG','eDSRPMAG'),metavar=('dmagcol','edmagcol'))
+parser.add_argument("-F", "--findata", action="store", help="Collect final data", nargs='*', metavar='magfiles')
+parser.add_argument("-i", "--inputfile", action="store", help="Input table", metavar='inputfile')
+#parser.add_argument("-I", "--Id", action="store", nargs='*', help="Objects ID to be stored", required=True, metavar='Id')
+parser.add_argument("-o", "--outlist", action="store", help="Output file for candidate list", metavar='outlist')
+parser.add_argument("-r", "--resfile", action="store", help="Result table (created if it does not exist)", required=True, metavar='resfile')
+parser.add_argument("-s", "--sequence", action="store_true", help="Generate final graphic sequences")
+parser.add_argument("-v", "--verbose", action="store_true", help="Fully describe operations")
+parser.add_argument("--version", action="version", version=__version__)
+options = parser.parse_args()
+
+
+
+
+#
+if options.resfile:
+    #
+    dto = Table()
+    ndto = Table()
+    cll = []
+    for c,f in zip(GW.ColList,GW.FormList):
+        cll.append(Column(name=c,dtype=f))
+    ndto.add_columns(cll)
+    dto.add_columns(cll)
+    #
+    if os.path.isfile(options.resfile):
+        if options.verbose:
+            print ("Reading table ", options.resfile)
+        dto = Table.read(options.resfile, format='ascii.ecsv')   
+        for c in GW.ColList:
+            if not (c in dto.columns.keys()):
+                parser.error ("Colum %s dos not exist in result file." % c) 
+    #
+    if options.inputfile:
+        if os.path.isfile(options.inputfile):
+            if options.verbose:
+                print ("Reading table ", options.inputfile)
+            dt = Table.read(options.inputfile, format='ascii.ecsv')
+        else:
+            parser.error ("Input file does not exist.")
+        #
+        dt.sort(GW.SRPMAG+'_1')
+        #
+        for c in GW.ColList:
+            if not ((c in dt.columns.keys()) or (c+'_1' in dt.columns.keys())):
+                parser.error ("Colum %s dos not exist in input file." % c)
+        #
+        pylab.ion()
+        p = pylab.figure(figsize=(8,4))
+        #
+        infopars = {}
+        for en in enumerate(dt):
+            print ("Processing entry %d of %d:" % (en[0]+1,len(dt)))
+            for cl in GW.InfoCols:
+                if cl+'_1' in dt.columns.keys():
+                    infopars[cl] = en[1][cl+'_1']
+                elif cl in dt.columns.keys():
+                    infopars[cl] = en[1][cl]
+                else:
+                    parser.error("%s column not found." % cl)
+            #
+            if options.dmagcol[0] in dt.columns.keys():
+                infopars[options.dmagcol[0]] = en[1][options.dmagcol[0]]
+            else:
+                parser.error("%s column not found." % options.dmagcol[0])
+            #
+            if options.dmagcol[1] in dt.columns.keys():
+                infopars[options.dmagcol[1]] = en[1][options.dmagcol[1]]
+            else:
+                parser.error("%s column not found." % options.dmagcol[1])
+            #
+            if (GW.PICCOL+'_1' in dt.columns.keys()) and (GW.PICCOL+'_2' in dt.columns.keys()):
+                infopars[GW.PICCOL+'_1'] = en[1][GW.PICCOL+'_1']
+                infopars[GW.PICCOL+'_2'] = en[1][GW.PICCOL+'_2']
+            else:
+                parser.error("Pics columns not found.")        
+            #
+            print("Id: ", infopars[GW.IDCOL])
+            print("Date: %.5f, mag: %.2f +/- %.2f" % (infopars[GW.DATECOL],infopars[GW.SRPMAG],infopars[GW.eSRPMAG])) 
+            if infopars[options.dmagcol[1]] < 99:
+                print("SRP Delta(mag): %.2f +/- %.2f" % (infopars[options.dmagcol[0]],infopars[options.dmagcol[1]]))
+            else:
+                print("SRP Delta(mag): %.2f (limit)" % (infopars[options.dmagcol[0]]))
+            print("GAIA: %s, Simbad: %s" % (infopars[GW.GAIACOL],infopars[GW.SIMBCOL]))
+            #
+            p.add_subplot(121)
+            sx = pylab.imread(infopars[GW.PICCOL+'_1'].split('"')[1])
+            pylab.imshow(sx)
+            pylab.gca().axes.get_xaxis().set_ticks([])
+            pylab.gca().axes.get_yaxis().set_ticks([])
+            p.add_subplot(122)
+            dx = pylab.imread(infopars[GW.PICCOL+'_2'].split('"')[1])
+            pylab.imshow(dx)
+            pylab.gca().axes.get_xaxis().set_ticks([])
+            pylab.gca().axes.get_yaxis().set_ticks([])
+            pylab.draw()
+            answ = input("Keep it (y/N/e)? ")
+            print()
+            #
+            if answ.upper() == 'Y':
+                dto.add_row()
+                dto[GW.IDCOL][len(dto)-1] = infopars[GW.IDCOL]
+                if GW.RACOL+'_1' in dt.columns.keys():
+                    dto[GW.RACOL][len(dto)-1] = en[1][GW.RACOL+'_1']
+                if GW.DECCOL+'_1' in dt.columns.keys():
+                    dto[GW.DECCOL][len(dto)-1] = en[1][GW.DECCOL+'_1']
+                #
+                for c in GW.ColList[3:]:
+                    if c+'_1' in dt.columns.keys():
+                        dto[c][len(dto)-1] = en[1][c+'_1']
+                #
+                dto.add_row()
+                dto[GW.IDCOL][len(dto)-1] = dto[GW.IDCOL][len(dto)-2]
+                dto[GW.RACOL][len(dto)-1] = dto[GW.RACOL][len(dto)-2]
+                dto[GW.DECCOL][len(dto)-1] = dto[GW.DECCOL][len(dto)-2]
+                in2 = False
+                for c in GW.ColList[3:]:
+                    if c+'_2' in dt.columns.keys():
+                        dto[c][len(dto)-1] = en[1][c+'_2']
+                        in2 = True
+                if not in2:
+                    dto.remove_row(len(dto)-1)
+            elif answ.upper() == 'E':
+                break                    
+    #
+    if options.findata:
+        for fd in options.findata:
+            if os.path.isfile(fd):
+                if options.verbose:
+                    print ("Reading table ", fd)
+                    dtt = Table.read(fd, format='ascii.ecsv')
+                else:
+                    parser.error ("Final data file %s does not exist." % fd)
+            #
+            ct = SkyCoord(ra=dtt[GW.RACOL+'_1'], dec=dtt[GW.DECCOL+'_1'])
+            #cs = SkyCoord(ra=91.757234713*u.deg, dec=-70.8098942*u.deg)
+            #id2 = cs.separation(ct) < 0.5*u.arcsec
+            #
+            rac = list(dto[GW.RACOL])
+            decc = list(dto[GW.DECCOL])
+            rade = list(set(zip(rac,decc)))
+            for enr,end in rade:
+                cs = SkyCoord(ra=enr*u.deg, dec=end*u.deg)
+                id2 = cs.separation(ct) < 0.5*u.arcsec
+                #
+                if numpy.count_nonzero(id2) > 0:
+                    dtts = dtt[id2]
+                    dto.add_row()
+                    dto[GW.IDCOL][len(dto)-1] = str(dtts[GW.IDCOL+'_1'][0])
+                    dto[GW.RACOL][len(dto)-1] = dtts[GW.RACOL+'_1'][0]
+                    dto[GW.DECCOL][len(dto)-1] = dtts[GW.DECCOL+'_1'][0]
+                    #
+                    for c in GW.ColList[3:]:
+                        if c+'_1' in dtt.columns.keys():
+                            dto[c][len(dto)-1] = dtts[c+'_1'][0]
+                    if not (GW.PICCOL+'_1' in dtt.columns.keys()) or dto[GW.PICCOL][len(dto)-1] == "No":
+                        fname = os.path.splitext(dtts[GW.FNAMECOL+'_1'][0])[0]+'.fits'
+                        if os.path.isfile(fname):
+                            res1 = GetPics(dtts[GW.RACOL+'_1'],dtts[GW.DECCOL+'_1'],os.path.join(GW.PICDIR,dtts[GW.IDCOL+'_1'][0]),fname)
+                            dto[GW.PICCOL][len(dto)-1] = '<img src="%s">' % res1
+                        else:
+                            res1 = 'No'
+                            dto[GW.PICCOL][len(dto)-1] = res1
+                    #
+                    dto.add_row()
+                    dto[GW.IDCOL][len(dto)-1] = dto[GW.IDCOL][len(dto)-2]
+                    dto[GW.RACOL][len(dto)-1] = dto[GW.RACOL][len(dto)-2]
+                    dto[GW.DECCOL][len(dto)-1] = dto[GW.DECCOL][len(dto)-2]
+                    in2 = False
+                    for c in GW.ColList[3:]:
+                        if c+'_2' in dtt.columns.keys():
+                            dto[c][len(dto)-1] = dtts[c+'_2'][0]
+                            in2 = True
+                    if in2:
+                        if (not (GW.PICCOL+'_2' in dtt.columns.keys())) or (dto[GW.PICCOL][len(dto)-1] == "No"):
+                            fname = os.path.splitext(dtts[GW.FNAMECOL+'_2'][0])[0]+'.fits'
+                            if os.path.isfile(fname):
+                                res2 = GetPics(dtts[GW.RACOL+'_1'],dtts[GW.DECCOL+'_1'],os.path.join(GW.PICDIR,dtts[GW.IDCOL+'_1'][0]),fname)
+                                dto[GW.PICCOL][len(dto)-1] = '<img src="%s">' % res2
+                            else:
+                                res2 = 'No'
+                                dto[GW.PICCOL][len(dto)-1] = res2
+
+                    else:
+                        dto.remove_row(len(dto)-1)
+    #
+    if len(dto) > 0:
+        ndto = table.unique(dto)
+    else:
+        ndto = dto
+    #
+    vid = list(ndto[GW.IDCOL])
+    vidcl = list(set(vid))
+    #
+    vaw = numpy.zeros(shape=(len(vidcl),len(vidcl)))
+    for v in enumerate(vidcl):
+        for w in enumerate(vidcl):
+            vaw[v[0],w[0]] = fuzz.ratio(v[1],w[1])
+    vaw[vaw == 100] = 0
+    while vaw.max() > 85:
+        x,y = numpy.unravel_index(vaw.argmax(), vaw.shape)
+        answ = input("Id %s and %s look similar (score %.2f). Should we join them (y/N)? " % (vidcl[x],vidcl[y],vaw.max()))
+        if answ.upper() == 'Y':
+            idx = ndto[GW.IDCOL] == vidcl[y]
+            ndto[GW.IDCOL][idx] = vidcl[x]
+        vaw[x,y] = 0.0
+        vaw[y,x] = 0.0
+    #
+    if options.sequence:
+        if not os.path.isdir(GW.RESDIR):
+            os.mkdir(GW.RESDIR)
+    #
+        ndto.sort(GW.DATECOL)
+    #
+        vid = list(ndto[GW.IDCOL])
+        vidcl = list(set(vid))
+        mjd = list(ndto[GW.DATECOL])
+        mjdcl = list(set(mjd))
+        mjdcl.sort()
+    #
+        if options.verbose:
+            print ("Preparing plots...")
+        pylab.ioff()
+        for i in vidcl:
+            idx = ndto[GW.IDCOL] == i
+            q = pylab.figure(figsize=(12,4))
+            gs = gridspec.GridSpec(2,len(mjdcl))
+            for ii in enumerate(ndto[idx]):
+                qx = q.add_subplot(gs[0,mjdcl.index(ii[1][GW.DATECOL])])
+                try:
+                    fn = str(ii[1][GW.PICCOL]).split('"')[1]
+                    qqx = pylab.imread(fn)
+                    pylab.imshow(qqx)
+                except IndexError:
+                    pass
+                except FileNotFoundError:
+                    pass
+                pylab.gca().axes.get_xaxis().set_ticks([])
+                pylab.gca().axes.get_yaxis().set_ticks([])
+            qx = q.add_subplot(gs[1,:])
+            pylab.text(0.5,0.5,str(i),transform=qx.transAxes)
+            #qx.plot(ndto[idx][GW.DATECOL],ndto[idx][GW.SRPMAG],'o')
+            idxgood = (ndto[GW.IDCOL] == i) & (ndto[GW.eSRPMAG] < 90)
+            idxupp = (ndto[GW.IDCOL] == i) & (ndto[GW.eSRPMAG] >= 90)         
+            xdata = ndto[GW.DATECOL][idx] - mjdcl[0]
+            xdatagood = ndto[GW.DATECOL][idxgood] - mjdcl[0]
+            xdataupp = ndto[GW.DATECOL][idxupp] - mjdcl[0]        
+            qx.errorbar(xdatagood,ndto[GW.SRPMAG][idxgood],ndto[GW.eSRPMAG][idxgood],fmt='o',color='blue')
+            #qx.errorbar(xdatagood,ndto[GW.ORGMAG][idxgood],ndto[GW.eORGMAG][idxgood],fmt='*',color='green')
+            qx.plot(xdataupp,ndto[GW.SRPMAG][idxupp],'v',color='red')
+            if pylab.ylim()[1] > 25.0:
+                pylab.ylim((pylab.ylim()[0],25.0))
+            if pylab.ylim()[0] < 15.0:
+               pylab.ylim((15,pylab.ylim()[1]))
+            pylab.ylim(pylab.ylim()[::-1])
+            pylab.xlim((0,max(mjdcl)-min(mjdcl)))
+            pylab.xlabel ("Days from the 1st epoch (MJD=%.3f)" % mjdcl[0])
+            pylab.ylabel ("Magnitudes")
+            pylab.subplots_adjust(bottom=0.15,hspace=0.05)
+            pylab.savefig(os.path.join(GW.RESDIR,i.astype(numpy.str)+'.png'))
+    #
+    ndto.sort(GW.IDCOL)
+    #
+    ndto.write(options.resfile,format='ascii.ecsv')
+    if options.verbose:
+        print ("Table %s with %d entries saved." % (options.resfile, len(ndto)))
+    else:
+        print (options.resfile, len(ndto))
+    #
+    if options.outlist:
+        g = open(options.outlist,'w')
+        ndto.sort(GW.SRPMAG)
+        idlist = []
+        for en in ndto:
+            if not (en[GW.IDCOL] in idlist):
+                if en[GW.XCOL] > 0 and en[GW.YCOL] > 0 and en[GW.FWCOL] > 0:
+                    fld = os.path.splitext(os.path.basename(en[GW.FNAMECOL]))[0].split('_')[-1]
+                    g.write("%s,%f.3,%f.3,%f.5,%f.5,%f.2,%f.3,%f.3,%s%s" % (fld,en[GW.XCOL],en[GW.YCOL],en[GW.RACOL],en[GW.DECCOL],en[GW.FWCOL],en[GW.SRPMAG],en[GW.eSRPMAG],en[GW.IDCOL],os.linesep))
+                    idlist.append(en[GW.IDCOL])
+        g.close()
+        if options.verbose:
+            print("Output list file saved in ", options.outlist)
+else:
+    parser.print_help()
+#

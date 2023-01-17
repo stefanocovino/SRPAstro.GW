@@ -1,0 +1,121 @@
+""" Code to select FITS tables
+Context : SRP.GW
+Module  : SRPGWSelect
+Author  : Stefano Covino
+Date    : 18/01/2016
+E-mail  : stefano.covino@brera.inaf.it
+URL:    : http://www.merate.mi.astro.it/utenti/covino
+Purpose : Select FITS tables
+
+usage: SRPGWSelect [-h] [-d] -i inputfile -o outfile -s selstr [-v]
+                   [--version]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -d, --debug           Debug information
+  -i inputfile, --inputfile inputfile
+                        Input table
+  -o outfile, --outfile outfile
+                        Output table
+  -s selstr, --selstr selstr
+                        Selection string
+  -v, --verbose         Fully describe operations
+  --version             show program's version number and exit
+
+
+History : (13/11/2015) First version.
+		: (02/01/2016) Possibility of asymmetric filetring.
+        : (18/01/2016) Different defaul values.
+"""
+
+__version__ = '1.1.1'
+
+
+import argparse, os
+import numpy
+from astropy.table import vstack, Table
+import SRPGW as GW
+from SRPGW.GetCommandStr import GetCommandStr
+from SRP.SRPStatistics.StDev import StDev
+import warnings
+
+
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-c", "--cols", action="store", nargs=2, default=('ASRPMAG', 'DSRPMAG'), help="Columns to be analyzed (mag, delta_mag)", metavar=('mag', 'deltamag'))
+parser.add_argument("-d", "--dir", action="store", choices=['all','high','low'], default='all', help="Direction of filtering")
+parser.add_argument("-i", "--inputfile", action="store", help="Input table", required=True, metavar='inputfile')
+parser.add_argument("-m", "--median", action="store_true", help="Median rather than mean")
+parser.add_argument("-n", "--nbin", action="store", type=int, default=10, help="n bin for computation", metavar='nbin')
+parser.add_argument("-o", "--outfile", action="store", help="Output table", required=True, metavar='outfile')
+parser.add_argument("-s", "--sigma", action="store", type=float, default=7., help="n sigma from the average", metavar='sigma')
+parser.add_argument("-v", "--verbose", action="store_true", help="Fully describe operations")
+parser.add_argument("--version", action="version", version=__version__)
+options = parser.parse_args()
+
+
+#
+if options.inputfile and options.outfile:
+    #
+    if not os.path.isfile(options.inputfile):
+        parser.error ("Input file list does not exist.")
+    #
+    if options.nbin < 1:
+        parser.error ("Number of bins must be greater than 0.")
+    #
+    if options.sigma < 0.:
+        parser.error ("Number of sigmas must be greater than 0.")
+    #
+    if options.verbose:
+        print ("Reading table ", options.inputfile)
+    dt = Table.read(options.inputfile, format='ascii.ecsv')
+    #
+    if (options.cols[0] not in dt.columns.keys()) or (options.cols[1] not in dt.columns.keys()):
+        parser.error ("Columns %s and %s to be analyzed do not exist." % (options.cols[0], options.cols[1]))
+    #
+    gooddata = [(dt[options.cols[0]] < 90) & (dt[options.cols[0]] > -90)]
+    mincol = numpy.min(dt[options.cols[0]][gooddata])
+    maxcol = numpy.max(dt[options.cols[0]][gooddata])
+    if options.verbose:
+        print ("Column %s max: %.3f, column min: %.3f" % (options.cols[0], mincol, maxcol))
+    #
+    seltab = []
+    lims = numpy.linspace(mincol,maxcol,options.nbin+1)
+    for l in range(len(lims)-1):
+        if options.verbose:
+            print ("Interval from %.3f to %.3f..." % (lims[l],lims[l+1]))
+        tabl = dt[(dt[options.cols[0]] >= lims[l]) & (dt[options.cols[0]] < lims[l+1])]
+        ngooddata = [(tabl[options.cols[1]] < 50) & (tabl[options.cols[1]] > -50)]
+        warnings.filterwarnings('ignore', category=UserWarning, append=True)
+        warnings.filterwarnings('ignore', category=RuntimeWarning, append=True)
+        if options.median:
+            mean = numpy.median(tabl[options.cols[1]][ngooddata])
+            std = StDev(tabl[options.cols[1]][ngooddata],mean)
+        else:
+            mean = numpy.mean(tabl[options.cols[1]][ngooddata])
+            std = numpy.std(tabl[options.cols[1]][ngooddata])
+        #stab = dt[(dt[options.cols[1]] >= mean+options.sigma*std) | (dt[options.cols[1]] <= mean-options.sigma*std)]
+        if options.dir == 'all':
+            stab = tabl[numpy.abs(tabl[options.cols[1]] - mean) >= (options.sigma*std)]
+        elif options.dir == 'high':
+            stab = tabl[(tabl[options.cols[1]] - mean) >= (options.sigma*std)]
+        elif options.dir == 'low':
+            stab = tabl[(tabl[options.cols[1]] - mean) <= -(options.sigma*std)]
+        warnings.resetwarnings()
+        if options.verbose:
+            print ("\tMean: %.3f, std: %.3f. Limits at %.3f and %.3f. # objects: %d" % (mean,std,mean-options.sigma*std,mean+options.sigma*std, len(stab)))
+        seltab.append(stab)
+    restab = vstack(seltab)
+    restab.meta['COMMENT'] = ["Table derived with adaptive selection on column: '%s'" % (options.cols[1]),]
+    #
+    if options.verbose:
+        print ("Saving results...")
+    restab.write(options.outfile,format='ascii.ecsv')
+    if options.verbose:
+        print ("Table %s with %d entries saved." % (options.outfile, len(restab)))
+    else:
+        print (options.outfile, len(restab))
+else:
+    parser.print_help()
+#

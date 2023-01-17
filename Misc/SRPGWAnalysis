@@ -1,0 +1,315 @@
+""" Code to query catalogues
+Context : SRP.GW
+Module  : SRPGWAnalysis
+Author  : Stefano Covino
+Date    : 07/01/2016
+E-mail  : stefano.covino@brera.inaf.it
+URL:    : http://www.merate.mi.astro.it/utenti/covino
+Purpose : Data Analysis
+
+usage: SRPGWAnalysis [-h] [-a] [-A {my,sex,apy}] [-c RA DEC] [-d] -i inputfile
+-o outfile [-p] [-r ph1 is1 os1 ph2 is2 os2] [-v]
+[--version]
+
+optional arguments:
+-h, --help            show this help message and exit
+-a, --apphot          Compute aperture photometry
+-A {my,sex,apy}, --apphottype {my,sex,apy}
+Aperture photometry algorithm
+-c RA DEC, --coordcols RA DEC
+Coordinate column labels
+-d, --debug           Debug information
+-i inputfile, --inputfile inputfile
+Input table
+-o outfile, --outfile outfile
+Output table
+-p, --pics            Get pictures
+-r ph1 is1 os1 ph2 is2 os2, --radii ph1 is1 os1 ph2 is2 os2
+Radii for photometry
+-v, --verbose         Fully describe operations
+--version             show program's version number and exit
+
+
+History : (13/11/2015) First version.
+        : (18/12/2015) Adaptive photometry annuli.
+        : (21/12/2015) Photometric radii addeable on the command line.
+        : (22/12/2015) Minor bug.
+        : (01/02/2016) One more minor bug.
+        : (07/01/2016) Possibility to generate FITS stamps.
+"""
+
+__version__ = '1.3.0'
+
+
+import argparse, os, sys
+import numpy
+import pyprind
+from astropy.table import Column, Table
+import SRPGW as GW
+from SRPGW.GetPics import GetPics
+from SRPGW.GetFits import GetFits
+from SRPGW.GetApPhot import GetApPhot
+
+
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-a", "--apphot", action="store_true", help="Compute aperture photometry")
+parser.add_argument("-A", "--apphottype", action="store", default='my', choices=['my','sex','apy'], help="Aperture photometry algorithm")
+parser.add_argument("-c", "--coordcols", action="store", nargs=2, default=('X_WORLD','Y_WORLD'), help="Coordinate column labels", metavar=('RA','DEC'))
+parser.add_argument("-d", "--debug", action="store_true", help="Debug information")
+parser.add_argument("-f", "--fits", action="store_true", help="Generate FITS stamps")
+parser.add_argument("-F", "--fitssize", action="store", type=float, default=1.0, help="FITS stamp size (arcmin)", metavar='stampsize')
+parser.add_argument("-i", "--inputfile", action="store", help="Input table", required=True, metavar='inputfile')
+parser.add_argument("-o", "--outfile", action="store", help="Output table", required=True, metavar='outfile')
+parser.add_argument("-p", "--pics", action="store_true", help="Get pictures")
+parser.add_argument("-r", "--radii", action="store", type=float, nargs=6, help="Radii for photometry", metavar=('ph1','is1','os1','ph2','is2','os2'))
+parser.add_argument("-v", "--verbose", action="store_true", help="Fully describe operations")
+parser.add_argument("--version", action="version", version=__version__)
+options = parser.parse_args()
+
+
+#
+if options.inputfile and options.outfile:
+    #
+    if not os.path.isfile(options.inputfile):
+        parser.error ("Input file does not exist.")
+    #
+    if not (options.pics or options.apphot or options.fits):
+        parser.error ("At least one option between pics/apphot/fits should be selected.")
+    #
+    if options.radii:
+        if options.radii[0] <= 0 or options.radii[3] <= 0:
+            parser.error("Radii must be positive.")
+        elif options.radii[2] <= options.radii[1] or options.radii[1] < options.radii[0] or options.radii[5] <= options.radii[4] or options.radii[4] < options.radii[3]:
+            parser.error("Radii must be increasing.")
+    #
+    if options.fits:
+        if options.fitssize <= 0:
+            parser.error("FITS stamp size must be positive.")
+    #
+    if options.verbose:
+        print ("Reading table ", options.inputfile)
+    dt = Table.read(options.inputfile, format='ascii.ecsv')
+    if len(dt) == 0:
+        if options.verbose:
+            print("No entries in table ", options.inputfile)
+            sys.exit(0)
+    #
+    if (options.coordcols[0]+'_1' in dt.columns.keys()) and (options.coordcols[1]+'_1' in dt.columns.keys()):
+        racol = options.coordcols[0]+'_1'
+        deccol = options.coordcols[1]+'_1'
+    elif (options.coordcols[0] in dt.columns.keys()) and (options.coordcols[1] in dt.columns.keys()):
+        racol = options.coordcols[0]
+        deccol = options.coordcols[1]
+    else:
+        parser.error ("Coordinates columns not recognized.")
+    #
+    septool = options.apphottype
+    if options.apphottype == 'sex':
+        if options.verbose and options.apphot:
+            print ("SExtractor photometric tool enabled.")
+    elif options.apphottype == 'my':
+        if options.verbose and options.apphot:
+            print ("Native photometric tool enabled.")
+    elif options.apphottype == 'apy':
+        if options.verbose and options.apphot:
+            print ("astropy photometric tool enabled.")
+    #
+    if options.pics:
+        if not os.path.isdir(GW.PICDIR):
+            os.mkdir(GW.PICDIR)
+        if options.verbose:
+            print ("Drawing pictures...")
+        if (GW.FNAMECOL+'_1' in dt.columns.keys()) and (GW.FNAMECOL+'_2' in dt.columns.keys()):
+            wei1 = []
+            wei2 = []
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("First epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_1'])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res1 = GetPics(en[racol],en[deccol],os.path.join(GW.PICDIR,en[GW.IDCOL+'_1']),fname)
+                else:
+                    res1 = 'No'
+                wei1.append('<img src="%s">' % res1)
+                if options.debug:
+                    print ("%s %s: %s" % (en[racol],en[deccol],res1))
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("Second epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_2'])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res2 = GetPics(en[racol],en[deccol],os.path.join(GW.PICDIR,en[GW.IDCOL+'_1']),fname)
+                else:
+                    res2 = 'No'
+                wei2.append('<img src="%s">' % res2)
+                if options.debug:
+                    print ("%s %s: %s" % (en[racol],en[deccol],res2))
+            weiq1 = Column(wei1, name=GW.PICCOL+'_1')
+            weiq2 = Column(wei2, name=GW.PICCOL+'_2')
+            if GW.PICCOL+'_1' in dt.columns.keys():
+                dt.remove_column(GW.PICCOL+'_1')
+            if GW.PICCOL+'_2' in dt.columns.keys():
+                dt.remove_column(GW.PICCOL+'_2')
+            dt.add_column(weiq1)
+            dt.add_column(weiq2)
+        else:
+            parser.error('Filename column(s) not present.')
+    #
+    if options.apphot:
+        if options.verbose:
+            print ("Aperture photometry...")
+        if (GW.FNAMECOL+'_1' in dt.columns.keys()) and (GW.FNAMECOL+'_2' in dt.columns.keys()):
+            mag1 = []
+            emag1 = []
+            mag2 = []
+            emag2 = []
+            #
+            if options.radii:
+                fw0 = int(round(options.radii[0]))
+                fw1 = int(round(options.radii[1]))
+                fw2 = int(round(options.radii[2]))
+                fw3 = int(round(options.radii[3]))
+                fw4 = int(round(options.radii[4]))
+                fw5 = int(round(options.radii[5]))
+            else:
+                if GW.FWCOL+'_1' in dt.columns.keys():
+                    fw0 = int(round(numpy.median(dt[GW.FWCOL+'_1'])))
+                    fw1 = 2*fw0
+                    fw2 = 3*fw0
+                else:
+                    fw0 = 5
+                    fw1 = 10
+                    fw2 = 15
+                if GW.FWCOL+'_2' in dt.columns.keys():
+                    fw3 = int(round(numpy.median(dt[GW.FWCOL+'_2'])))
+                    fw4 = 2*fw3
+                    fw5 = 3*fw3
+                else:
+                    fw3 = 5
+                    fw4 = 10
+                    fw5 = 15
+            #
+            if options.verbose:
+                print("Annuli for photometry for the 1st catalogue (px): ", fw0, fw1, fw2)
+            if options.verbose:
+                print("Annuli for photometry for the 2nd catalogue (px): ", fw3, fw4, fw5)
+            #
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("First epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_1'])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res1 = GetApPhot(en[racol],en[deccol],fname,(fw0,fw1,fw2),sept=septool)
+                else:
+                    res1 = (99,99)
+                mag1.append(res1[0])
+                emag1.append(res1[1])
+                if options.debug:
+                    print ("%s %s: %s %s" % (en[racol],en[deccol],res1[0],res1[1]))
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("Second epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_2'])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res2 = GetApPhot(en[racol],en[deccol],fname,(fw3,fw4,fw5),sept=septool)
+                else:
+                    res2 = (99,99)
+                mag2.append(res2[0])
+                emag2.append(res2[1])
+                if options.debug:
+                    print ("%s %s: %s %s" % (en[racol],en[deccol],res2[0],res2[1]))
+            magq1 = Column(mag1, name=GW.SRPMAG+'_1')
+            emagq1 = Column(emag1, name=GW.eSRPMAG+'_1')
+            magq2 = Column(mag2, name=GW.SRPMAG+'_2')
+            emagq2 = Column(emag2, name=GW.eSRPMAG+'_2')
+            if GW.SRPMAG+'_1' in dt.columns.keys():
+                dt.remove_column(GW.SRPMAG+'_1')
+            if GW.eSRPMAG+'_1' in dt.columns.keys():
+                dt.remove_column(GW.eSRPMAG+'_1')
+            if GW.SRPMAG+'_2' in dt.columns.keys():
+                dt.remove_column(GW.SRPMAG+'_2')
+            if GW.eSRPMAG+'_2' in dt.columns.keys():
+                dt.remove_column(GW.eSRPMAG+'_2')
+            dt.add_column(magq1)
+            dt.add_column(emagq1)
+            dt.add_column(magq2)
+            dt.add_column(emagq2)
+            dt.meta['COMMENT'] = ["Annuli for photometry (px): %d %d %d (1st cat) %d %d %d (2nd cat)" % (fw0,fw1,fw2,fw3,fw4,fw5),]
+        else:
+            parser.error('Filename column(s) not present.')
+    #
+    if options.fits:
+        if not os.path.isdir(GW.FITSDIR):
+            os.mkdir(GW.FITSDIR)
+        if options.verbose:
+            print ("Getting FITS stamps...")
+        if (GW.FNAMECOL+'_1' in dt.columns.keys()) and (GW.FNAMECOL+'_2' in dt.columns.keys()):
+            fits1 = []
+            fits2 = []
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("First epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_1'])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res1 = GetFits(en[racol],en[deccol],os.path.join(GW.FITSDIR,en[GW.IDCOL+'_1']),fname,options.fitssize)
+                else:
+                    res1 = 'No'
+                fits1.append(res1)
+                if options.debug:
+                    print ("%s %s: %s" % (en[racol],en[deccol],res1))
+            if options.verbose:
+                dtpbar = pyprind.prog_bar(dt)
+            else:
+                dtpbar = dt
+            if options.verbose:
+                print ("Second epoch...")
+            for en in dtpbar:
+                fname = os.path.splitext(en[GW.FNAMECOL+'_2'])[0]+'.fits'
+                if os.path.isfile(fname):
+                    res2 = GetFits(en[racol],en[deccol],os.path.join(GW.FITSDIR,en[GW.IDCOL+'_1']),fname,options.fitssize)
+                else:
+                    res2 = 'No'
+                fits2.append(res2)
+                if options.debug:
+                    print ("%s %s: %s" % (en[racol],en[deccol],res2))
+            fitsq1 = Column(fits1, name=GW.FITSCOL+'_1')
+            fitsq2 = Column(fits2, name=GW.FITSCOL+'_2')
+            if GW.FITSCOL+'_1' in dt.columns.keys():
+                dt.remove_column(GW.FITSCOL+'_1')
+            if GW.FITSCOL+'_2' in dt.columns.keys():
+                dt.remove_column(GW.FITSCOL+'_2')
+            dt.add_column(fitsq1)
+            dt.add_column(fitsq2)
+        else:
+            parser.error('Filename column(s) not present.')
+    #
+    dt.write(options.outfile,format='ascii.ecsv')
+    if options.verbose:
+        print ("Table %s with %d entries saved." % (options.outfile, len(dt)))
+    else:
+        print (options.outfile, len(dt))
+else:
+    parser.print_help()
+#
